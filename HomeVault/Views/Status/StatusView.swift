@@ -56,7 +56,7 @@ struct StatusView: View {
                         Button {
                             UpdateChecker.shared.install()
                         } label: {
-                            Label("Update auf \(release.version) installieren", systemImage: "arrow.down.app")
+                            Label(release.date.map { "Update vom \($0) installieren" } ?? "Update installieren", systemImage: "arrow.down.app")
                         }
                     }
                     if let page = UpdateChecker.pagesURL {

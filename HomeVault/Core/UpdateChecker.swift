@@ -14,6 +14,8 @@ final class UpdateChecker {
         let build: String
         let manifest: String
         let notes: String?
+        /// Veröffentlichungsdatum, z. B. "12.10.2026"
+        let date: String?
     }
 
     private(set) var available: Release?

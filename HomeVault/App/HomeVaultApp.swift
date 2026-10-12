@@ -82,7 +82,7 @@ struct UpdateBanner: View {
                 .font(.title2)
                 .foregroundStyle(.tint)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Update verfügbar (\(release.version))").font(.subheadline.bold())
+                Text(release.date.map { "Update vom \($0)" } ?? "Update verfügbar").font(.subheadline.bold())
                 if let notes = release.notes, !notes.isEmpty {
                     Text(notes).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
