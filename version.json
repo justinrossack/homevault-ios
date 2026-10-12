@@ -1,0 +1,9 @@
+{
+  "version": "1.0",
+  "build": "202610121801",
+  "bundle": "de.justinrossack.homevault",
+  "manifest": "https://justinrossack.github.io/homevault-ios/manifest.plist",
+  "expires": "2027-10-12T00:36:55Z",
+  "notes": "iPhone von Norman freigeschaltet, Update-Hinweis mit Datum",
+  "date": "12.10.2026"
+}
