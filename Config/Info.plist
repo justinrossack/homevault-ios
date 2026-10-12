@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Der Server läuft im Heimnetz ohne HTTPS -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<!-- Installationsseite für Updates, setzt scripts/release.sh -->
+	<key>HVUpdateURL</key>
+	<string>$(HV_UPDATE_URL)</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>de.justinrossack.homevault.backup.refresh</string>
+		<string>de.justinrossack.homevault.backup.processing</string>
+		<string>de.justinrossack.homevault.backup.continued.*</string>
+	</array>
+</dict>
+</plist>

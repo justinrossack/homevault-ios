@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>homevault installieren</title>
+<link rel="apple-touch-icon" href="icon-180.png">
+<style>
+  :root {
+    --bg: #f2f2f7; --card: #fff; --text: #1c1c1e; --muted: #6e6e73; --accent: #2e6bc7; --line: #e5e5ea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #000; --card: #1c1c1e; --text: #f2f2f7; --muted: #98989f; --accent: #5b9bff; --line: #38383a; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 32px 16px 48px;
+  }
+  main { max-width: 520px; margin: 0 auto; }
+  header { text-align: center; margin-bottom: 24px; }
+  header img { width: 96px; height: 96px; border-radius: 22px; box-shadow: 0 6px 20px rgba(0,0,0,.15); }
+  h1 { font-size: 28px; margin: 14px 0 2px; }
+  .sub { color: var(--muted); font-size: 15px; }
+  .card { background: var(--card); border-radius: 16px; padding: 18px; margin: 16px 0; }
+  .btn {
+    display: block; text-align: center; background: var(--accent); color: #fff; text-decoration: none;
+    font-weight: 600; padding: 14px; border-radius: 12px; font-size: 18px;
+  }
+  .meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 14px; margin-top: 12px; }
+  h2 { font-size: 17px; margin: 0 0 8px; }
+  ol { padding-left: 22px; margin: 8px 0 0; }
+  li { margin: 6px 0; }
+  p { margin: 6px 0; }
+  .muted { color: var(--muted); font-size: 15px; }
+  .notice { display: none; background: #fff4d6; color: #5c4400; border-radius: 12px; padding: 12px 14px; font-size: 15px; }
+  @media (prefers-color-scheme: dark) { .notice { background: #3a2f0b; color: #ffdf8a; } }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="icon-512.png" alt="">
+    <h1>homevault</h1>
+    <div class="sub">Fotos und Dateien vom Familienserver</div>
+  </header>
+
+  <p class="notice" id="desktop">Diese Seite bitte auf dem iPhone in Safari öffnen.</p>
+
+  <section class="card">
+    <a class="btn" href="itms-services://?action=download-manifest&amp;url={{MANIFEST_URL}}">Installieren</a>
+    <div class="meta"><span>Version {{VERSION}} ({{BUILD}})</span><span>vom {{DATE}}</span></div>
+    <p class="muted" style="margin-top:12px">Neu: {{NOTES}}</p>
+    <p class="muted">Gültig bis {{EXPIRES}}. Vorher kommt rechtzeitig ein Update in der App.</p>
+  </section>
+
+  <section class="card">
+    <h2>Nach dem Tippen auf „Installieren“</h2>
+    <ol>
+      <li>„Installieren“ bestätigen. Die App erscheint auf dem Home-Bildschirm.</li>
+      <li>App öffnen, Server-Adresse und deinen homevault-Benutzer eingeben.</li>
+      <li>Im Tab „Backup“ die Sicherung einschalten und Zugriff auf alle Fotos erlauben.</li>
+    </ol>
+  </section>
+
+  <section class="card">
+    <h2>„App kann nicht installiert werden“?</h2>
+    <p>Dann ist dein iPhone noch nicht freigeschaltet. Das geht einmalig so:</p>
+    <ol>
+      <li>Auf dem iPhone in Safari die Geräte-ID (UDID) anzeigen lassen, z.&nbsp;B. über
+        <a href="https://median.co/udid">median.co/udid</a>. Dabei wird kurz ein Profil installiert.</li>
+      <li>Die angezeigte UDID an den Admin schicken.</li>
+      <li>Das Profil danach wieder löschen: Einstellungen → Allgemein → VPN &amp; Geräteverwaltung.</li>
+      <li>Sobald die nächste Version veröffentlicht ist, hier auf „Installieren“ tippen.</li>
+    </ol>
+  </section>
+
+  <p class="muted" style="text-align:center">Updates zeigt die App selbst an. Fotos und Anmeldung bleiben dabei erhalten.</p>
+</main>
+<script>
+  // Hinweis, wenn die Seite nicht auf einem iPhone/iPad geöffnet ist
+  var ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (!ios) document.getElementById("desktop").style.display = "block";
+</script>
+</body>
+</html>
