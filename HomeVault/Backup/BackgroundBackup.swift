@@ -23,7 +23,7 @@ enum BackgroundBackup {
     }
 
     static func schedule() {
-        guard BackupSettings.enabled else {
+        guard BackupSettings.enabled, !BackupSettings.paused else {
             BGTaskScheduler.shared.cancelAllTaskRequests()
             return
         }
@@ -63,7 +63,13 @@ enum BackgroundBackup {
             req.strategy = .fail
             if (try? BGTaskScheduler.shared.submit(req)) != nil { return }
         }
-        // Fallback: im Vordergrund, mit etwas Nachlaufzeit beim Verlassen der App
+        runWithGrace(.manual)
+    }
+
+    /// Läuft im Vordergrund und bekommt beim Verlassen der App noch etwas
+    /// Nachlaufzeit, statt sofort abzubrechen.
+    @MainActor
+    static func runWithGrace(_ trigger: BackupEngine.Trigger) {
         final class Token: @unchecked Sendable { var id = UIBackgroundTaskIdentifier.invalid }
         let token = Token()
         token.id = UIApplication.shared.beginBackgroundTask(withName: "backup") {
@@ -71,7 +77,7 @@ enum BackgroundBackup {
             UIApplication.shared.endBackgroundTask(token.id)
         }
         Task {
-            await BackupEngine.shared.run(.manual)
+            await BackupEngine.shared.run(trigger)
             UIApplication.shared.endBackgroundTask(token.id)
         }
     }
@@ -116,7 +122,7 @@ final class PhotoLibraryWatcher: NSObject, PHPhotoLibraryChangeObserver, @unchec
             pendingWork?.cancel()
             let work = DispatchWorkItem {
                 guard UIApplication.shared.applicationState == .active, BackupSettings.enabled else { return }
-                Task { await BackupEngine.shared.run(.foreground) }
+                BackgroundBackup.runWithGrace(.foreground)
             }
             pendingWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)

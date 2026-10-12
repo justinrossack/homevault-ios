@@ -100,32 +100,70 @@ struct BackupView: View {
                     HStack {
                         Text("Sichere …").bold()
                         Spacer()
-                        Text("\(status.done + status.skipped + status.failed) von \(status.total)")
+                        Text("\(status.processed) von \(status.total)")
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
                     }
-                    ProgressView(value: Double(status.done + status.skipped + status.failed), total: Double(max(status.total, 1)))
-                    if let current = status.current {
-                        Text(current).font(.caption).foregroundStyle(.secondary)
+                    ProgressView(value: Double(status.processed), total: Double(max(status.total, 1)))
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        HStack {
+                            if let speed = status.speed {
+                                Text("\(Format.bytes(Int64(speed)))/s")
+                            }
+                            Spacer()
+                            Text(Format.bytes(status.bytes) + " hochgeladen")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    }
+                    ForEach(status.current, id: \.self) { name in
+                        Label(name, systemImage: "arrow.up.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
                 .padding(.vertical, 4)
-                Button("Anhalten", role: .destructive) {
-                    Task { await BackupEngine.shared.cancel() }
-                }
             } else {
                 LabeledContent("Gesichert", value: "\(status.backedUp)")
                 LabeledContent("Ausstehend", value: status.pending.map(String.init) ?? "…")
                 if let last = status.lastRun {
                     LabeledContent("Letzter Abgleich", value: Format.relative(last))
                 }
-                Button {
-                    BackgroundBackup.startManual()
-                } label: {
-                    Label("Jetzt sichern", systemImage: "arrow.clockwise")
-                }
-                .disabled(auth != .authorized && auth != .limited)
             }
+
+            if status.paused {
+                Label("Pausiert", systemImage: "pause.circle.fill")
+                    .foregroundStyle(.orange)
+                Button {
+                    Task {
+                        await BackupEngine.shared.resume()
+                        BackgroundBackup.schedule()
+                        BackgroundBackup.startManual()
+                    }
+                } label: {
+                    Label("Fortsetzen", systemImage: "play.fill")
+                }
+            } else {
+                if !status.running {
+                    Button {
+                        BackgroundBackup.startManual()
+                    } label: {
+                        Label("Jetzt sichern", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(auth != .authorized && auth != .limited)
+                }
+                Button {
+                    Task {
+                        await BackupEngine.shared.pause()
+                        BackgroundBackup.schedule()
+                    }
+                } label: {
+                    Label("Pausieren", systemImage: "pause.fill")
+                }
+            }
+
             if status.failed > 0 {
                 Label("\(status.failed) Fotos konnten nicht gesichert werden", systemImage: "exclamationmark.circle")
                     .foregroundStyle(.orange)
@@ -146,6 +184,7 @@ struct BackupView: View {
                 return
             }
             BackupSettings.enabled = true
+            await BackupEngine.shared.resume()
             PhotoLibraryWatcher.shared.start()
             BackgroundBackup.schedule()
             await BackupEngine.shared.countPending()

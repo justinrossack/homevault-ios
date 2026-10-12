@@ -128,7 +128,7 @@ struct FolderView: View {
                 HStack(spacing: 12) {
                     Group {
                         if e.hasThumb {
-                            RemoteImage(path: e.path)
+                            RemoteImage(path: e.path, fallbackIcon: icon(e))
                         } else {
                             Image(systemName: icon(e)).font(.title2).foregroundStyle(.secondary)
                         }

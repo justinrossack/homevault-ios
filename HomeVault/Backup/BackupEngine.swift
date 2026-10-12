@@ -9,21 +9,33 @@ final class BackupStatus {
     static let shared = BackupStatus()
 
     var running = false
+    var paused = BackupSettings.paused
     var total = 0
     var done = 0
     var skipped = 0
     var failed = 0
-    var current: String?
+    /// Gerade in Arbeit (bis zu drei gleichzeitig)
+    var current: [String] = []
     var lastError: String?
     var lastRun: Date? = BackupSettings.lastRun
     /// Anzahl gesicherter Fotos laut Protokoll
     var backedUp = BackupLog.current()?.count ?? 0
     /// Noch nicht gesichert (letzte Zählung)
     var pending: Int?
+    /// Hochgeladene Bytes und Startzeit des Laufs (für die Geschwindigkeit)
+    var bytes: Int64 = 0
+    var startedAt: Date?
 
     private init() {}
 
-    var remaining: Int { max(total - done - skipped - failed, 0) }
+    var processed: Int { done + skipped + failed }
+
+    /// Bytes pro Sekunde seit Beginn des Laufs
+    var speed: Double? {
+        guard let startedAt, bytes > 0 else { return nil }
+        let t = Date().timeIntervalSince(startedAt)
+        return t > 1 ? Double(bytes) / t : nil
+    }
 }
 
 /// Sichert neue Fotos und Videos der Mediathek nach Privat/iPhone/<Jahr>/<Monat>.
@@ -33,6 +45,10 @@ actor BackupEngine {
     static let shared = BackupEngine()
 
     enum Trigger { case foreground, manual, background }
+
+    /// Gleichzeitige Uploads. Mehr bringt im Heimnetz kaum etwas und
+    /// belastet Fotos-Mediathek und Server unnötig.
+    static let parallel = 3
 
     private var task: Task<Void, Never>?
 
@@ -54,6 +70,18 @@ actor BackupEngine {
         task?.cancel()
     }
 
+    /// Hält die Sicherung an, bis sie fortgesetzt wird (auch keine automatischen Läufe).
+    func pause() async {
+        BackupSettings.paused = true
+        await MainActor.run { BackupStatus.shared.paused = true }
+        task?.cancel()
+    }
+
+    func resume() async {
+        BackupSettings.paused = false
+        await MainActor.run { BackupStatus.shared.paused = false }
+    }
+
     /// Zählt, was noch fehlt, ohne hochzuladen.
     func countPending() async {
         guard Self.authorized, let log = BackupLog.current() else { return }
@@ -68,7 +96,7 @@ actor BackupEngine {
     }
 
     /// Änderungen an der Anzeige laufen auf dem Main Actor.
-    private func ui(_ update: @escaping @MainActor @Sendable (BackupStatus) -> Void) async {
+    private static func ui(_ update: @escaping @MainActor @Sendable (BackupStatus) -> Void) async {
         await MainActor.run { update(BackupStatus.shared) }
     }
 
@@ -94,29 +122,48 @@ actor BackupEngine {
 
     // MARK: Ablauf
 
+    private enum Outcome {
+        case uploaded(Int64)
+        case skipped
+        case failed(String)
+        /// ganzen Lauf beenden (Netz weg, Speicherlimit)
+        case stop(String)
+        case cancelled
+    }
+
     private func perform(_ trigger: Trigger, onProgress: (@Sendable (Int, Int) -> Void)?) async {
+        guard !BackupSettings.paused else { return }
         guard trigger == .manual || BackupSettings.enabled else { return }
         guard Self.authorized else {
-            await ui { status in status.lastError = "Kein Zugriff auf die Fotos. Bitte in den Einstellungen erlauben." }
+            await Self.ui { $0.lastError = "Kein Zugriff auf die Fotos. Bitte in den Einstellungen erlauben." }
             return
         }
         guard let api = Settings.client(wifiOnly: BackupSettings.wifiOnly), let log = BackupLog.current() else {
-            await ui { status in status.lastError = "Nicht angemeldet" }
+            await Self.ui { $0.lastError = "Nicht angemeldet" }
             return
         }
 
-        let assets = Self.fetchAssets()
-        var pending: [PHAsset] = []
-        assets.enumerateObjects { a, _, _ in if !log.contains(a.localIdentifier) { pending.append(a) } }
+        // Fotos zuerst (viele, klein), dann Videos; jeweils neueste zuerst
+        var photos: [PHAsset] = []
+        var videos: [PHAsset] = []
+        Self.fetchAssets().enumerateObjects { a, _, _ in
+            guard !log.contains(a.localIdentifier) else { return }
+            if a.mediaType == .video { videos.append(a) } else { photos.append(a) }
+        }
+        let pending = photos + videos
         let total = pending.count
-        await ui { status in
-            status.running = true
-            status.total = total
-            status.done = 0
-            status.skipped = 0
-            status.failed = 0
-            status.lastError = nil
-            status.pending = total
+        let started = Date()
+        await Self.ui { s in
+            s.running = true
+            s.total = total
+            s.done = 0
+            s.skipped = 0
+            s.failed = 0
+            s.bytes = 0
+            s.startedAt = started
+            s.current = []
+            s.lastError = nil
+            s.pending = total
         }
         onProgress?(0, total)
 
@@ -127,61 +174,70 @@ actor BackupEngine {
         var stopError: String?
         var processed = 0
 
-        for asset in pending {
-            if Task.isCancelled { break }
-            do {
-                let uploaded = try await backup(asset, api: api, folders: folders, tmpRoot: tmpRoot)
-                log.add(asset.localIdentifier)
-                await ui { status in
-                    if uploaded { status.done += 1 } else { status.skipped += 1 }
-                    status.backedUp = log.count
-                    status.pending = max((status.pending ?? 1) - 1, 0)
-                }
-            } catch is CancellationError {
-                break
-            } catch let e as APIError where e.status == 400 && (e.errorDescription ?? "").contains("Speicherlimit") {
-                stopError = e.localizedDescription
-                break
-            } catch let e as APIError where [400, 404, 409, 415].contains(e.status ?? 0) {
-                // nur dieses Foto: weiter mit dem nächsten
-                let msg = "\(asset.creationDate.map { Format.monthYear.string(from: $0) } ?? "Foto"): \(e.localizedDescription)"
-                await ui { status in
-                    status.failed += 1
-                    status.lastError = msg
-                }
-            } catch let e as URLError where e.code == .cancelled {
-                break
-            } catch let e as URLError {
-                stopError = Self.describe(e)
-                break
-            } catch {
-                // z. B. iCloud-Original nicht ladbar: Foto überspringen
-                let msg = error.localizedDescription
-                await ui { status in
-                    status.failed += 1
-                    status.lastError = msg
+        await withTaskGroup(of: (String, Outcome).self) { group in
+            var queue = pending.makeIterator()
+            func addNext() {
+                guard let asset = queue.next() else { return }
+                group.addTask {
+                    (asset.localIdentifier, await Self.process(asset, api: api, folders: folders, tmpRoot: tmpRoot))
                 }
             }
-            processed += 1
-            onProgress?(processed, total)
+            for _ in 0..<Self.parallel { addNext() }
+
+            while let (id, outcome) = await group.next() {
+                processed += 1
+                switch outcome {
+                case .uploaded:
+                    log.add(id)
+                    let count = log.count
+                    await Self.ui { s in
+                        s.done += 1
+                        s.backedUp = count
+                        s.pending = max((s.pending ?? 1) - 1, 0)
+                    }
+                case .skipped:
+                    log.add(id)
+                    let count = log.count
+                    await Self.ui { s in
+                        s.skipped += 1
+                        s.backedUp = count
+                        s.pending = max((s.pending ?? 1) - 1, 0)
+                    }
+                case .failed(let msg):
+                    await Self.ui { s in
+                        s.failed += 1
+                        s.lastError = msg
+                    }
+                case .stop(let msg):
+                    stopError = stopError ?? msg
+                case .cancelled:
+                    break
+                }
+                onProgress?(processed, total)
+                if stopError != nil || Task.isCancelled {
+                    group.cancelAll()
+                } else {
+                    addNext()
+                }
+            }
         }
 
         try? FileManager.default.removeItem(at: tmpRoot)
         let now = Date()
         BackupSettings.lastRun = now
         let finalError = stopError
-        await ui { status in
-            status.running = false
-            status.current = nil
-            status.lastRun = now
-            if let finalError { status.lastError = finalError }
+        await Self.ui { s in
+            s.running = false
+            s.current = []
+            s.lastRun = now
+            if let finalError { s.lastError = finalError }
         }
     }
 
     static func describe(_ e: URLError) -> String {
         switch e.code {
-        case .notConnectedToInternet, .networkConnectionLost:
-            return BackupSettings.wifiOnly ? "Kein WLAN – Sicherung pausiert" : "Keine Verbindung"
+        case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed:
+            return BackupSettings.wifiOnly ? "Kein WLAN – Sicherung wartet" : "Keine Verbindung"
         case .cannotConnectToHost, .cannotFindHost, .timedOut:
             return "Server nicht erreichbar (bist du im Heimnetz?)"
         default:
@@ -189,8 +245,36 @@ actor BackupEngine {
         }
     }
 
-    /// Sichert ein Foto/Video. false = war schon auf dem Server.
-    private func backup(_ asset: PHAsset, api: APIClient, folders: RemoteFolders, tmpRoot: URL) async throws -> Bool {
+    /// Ein Foto/Video sichern und das Ergebnis einordnen.
+    private static func process(_ asset: PHAsset, api: APIClient, folders: RemoteFolders, tmpRoot: URL) async -> Outcome {
+        if Task.isCancelled { return .cancelled }
+        do {
+            if let bytes = try await backup(asset, api: api, folders: folders, tmpRoot: tmpRoot) {
+                return .uploaded(bytes)
+            }
+            return .skipped
+        } catch is CancellationError {
+            return .cancelled
+        } catch let e as URLError where e.code == .cancelled {
+            return .cancelled
+        } catch let e as URLError {
+            return .stop(describe(e))
+        } catch let e as APIError where e.status == 400 && (e.errorDescription ?? "").contains("Speicherlimit") {
+            return .stop(e.localizedDescription)
+        } catch let e as APIError where e.status == 401 {
+            return .stop("Anmeldung abgelaufen. Bitte unter „Server“ ab- und wieder anmelden.")
+        } catch let e as APIError where e.status == 503 {
+            return .stop("Server ist gerade in Wartung")
+        } catch {
+            if Task.isCancelled { return .cancelled }
+            // nur dieses Foto (z. B. iCloud-Original nicht ladbar): weiter mit dem nächsten
+            let when = asset.creationDate.map { Format.monthYear.string(from: $0) } ?? "Foto"
+            return .failed("\(when): \(error.localizedDescription)")
+        }
+    }
+
+    /// Sichert ein Foto/Video. nil = war schon auf dem Server, sonst hochgeladene Bytes.
+    private static func backup(_ asset: PHAsset, api: APIClient, folders: RemoteFolders, tmpRoot: URL) async throws -> Int64? {
         let resources = PHAssetResource.assetResources(for: asset)
         let main: PHAssetResource?
         var paired: PHAssetResource?
@@ -204,52 +288,88 @@ actor BackupEngine {
         guard let main else { throw APIError.server(415, "Foto ohne Originaldatei") }
 
         let folder = BackupSettings.folder(for: asset.creationDate ?? .now)
-        var name = Self.clean(main.originalFilename, fallback: asset.mediaType == .video ? "VID.MOV" : "IMG.JPG")
-        let shown = name
-        await ui { $0.current = shown }
+        var name = clean(main.originalFilename, fallback: asset.mediaType == .video ? "VID.MOV" : "IMG.JPG")
 
         let remote = try await folders.listing(folder)
-        let size = Self.fileSize(main)
+        let size = fileSize(main)
         if let existing = remote[name.lowercased()] {
-            if size == nil || existing == size { return false }
+            if size == nil || existing == size { return nil }
             // anderes Foto mit gleichem Namen (z. B. IMG_0001 nach 10.000 Fotos)
-            name = Self.suffixed(name, asset.localIdentifier)
+            name = suffixed(name, asset.localIdentifier)
         }
 
-        let dir = tmpRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
+        let shown = name
+        await ui { $0.current.append(shown) }
+        defer { Task { await ui { s in if let i = s.current.firstIndex(of: shown) { s.current.remove(at: i) } } } }
 
-        var files: [(name: String, url: URL)] = []
-        let mainURL = dir.appendingPathComponent(name)
-        try await Self.export(main, to: mainURL)
-        files.append((name, mainURL))
+        var files: [(name: String, resource: PHAssetResource)] = [(name, main)]
         if let paired {
             // gleicher Name wie das Foto, damit homevault das Live Photo erkennt
             let ext = (paired.originalFilename as NSString).pathExtension
-            let videoName = (name as NSString).deletingPathExtension + "." + (ext.isEmpty ? "MOV" : ext)
-            let url = dir.appendingPathComponent(videoName)
-            try await Self.export(paired, to: url)
-            files.append((videoName, url))
+            files.append(((name as NSString).deletingPathExtension + "." + (ext.isEmpty ? "MOV" : ext), paired))
+        }
+
+        // Multipart-Body direkt aus der Mediathek schreiben (eine Kopie statt zwei)
+        let boundary = "hv-\(UUID().uuidString)"
+        let body = tmpRoot.appendingPathComponent(UUID().uuidString + ".body")
+        defer { try? FileManager.default.removeItem(at: body) }
+        FileManager.default.createFile(atPath: body.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: body)
+        var bytes: Int64 = 0
+        do {
+            for file in files {
+                try handle.write(contentsOf: Multipart.head(name: file.name, boundary: boundary))
+                bytes += try await append(file.resource, to: handle)
+                try handle.write(contentsOf: Data("\r\n".utf8))
+            }
+            try handle.write(contentsOf: Multipart.tail(boundary: boundary))
+            try handle.close()
+        } catch {
+            try? handle.close()
+            throw error
         }
         try Task.checkCancellation()
 
-        let boundary = "hv-\(UUID().uuidString)"
-        let body = dir.appendingPathComponent(".body")
-        try Multipart.write(files: files, to: body, boundary: boundary)
-        _ = try await api.upload(multipartFile: body, boundary: boundary, folder: folder)
+        _ = try await api.upload(multipartFile: body, boundary: boundary, folder: folder) { sent in
+            Task { await ui { $0.bytes += sent } }
+        }
         await folders.record(folder, name: name, size: size)
-        return true
+        return bytes
     }
 
-    static func export(_ resource: PHAssetResource, to url: URL) async throws {
+    /// Schreibt eine Datei aus der Mediathek (ggf. aus iCloud) an das Ende von `handle`.
+    private static func append(_ resource: PHAssetResource, to handle: FileHandle) async throws -> Int64 {
         let opts = PHAssetResourceRequestOptions()
-        opts.isNetworkAccessAllowed = true // Originale aus iCloud laden
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            PHAssetResourceManager.default().writeData(for: resource, toFile: url, options: opts) { error in
-                if let error { cont.resume(throwing: error) } else { cont.resume() }
+        opts.isNetworkAccessAllowed = true
+        let manager = PHAssetResourceManager.default()
+        let request = DataRequest()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Int64, Error>) in
+                request.id = manager.requestData(for: resource, options: opts, dataReceivedHandler: { data in
+                    guard request.error == nil else { return }
+                    do {
+                        try handle.write(contentsOf: data)
+                        request.written += Int64(data.count)
+                    } catch {
+                        request.error = error
+                    }
+                }, completionHandler: { error in
+                    if let error = error ?? request.error {
+                        cont.resume(throwing: error)
+                    } else {
+                        cont.resume(returning: request.written)
+                    }
+                })
             }
+        } onCancel: {
+            if let id = request.id { manager.cancelDataRequest(id) }
         }
+    }
+
+    private final class DataRequest: @unchecked Sendable {
+        var id: PHAssetResourceDataRequestID?
+        var written: Int64 = 0
+        var error: Error?
     }
 
     /// Dateigröße ohne die Datei zu laden (nicht offiziell, aber seit Jahren stabil).
@@ -277,18 +397,28 @@ actor BackupEngine {
 actor RemoteFolders {
     private let api: APIClient
     private var cache: [String: [String: Int64]] = [:]
+    /// laufende Abfragen, damit parallele Uploads einen Ordner nur einmal laden
+    private var loading: [String: Task<[String: Int64], Error>] = [:]
 
     init(api: APIClient) { self.api = api }
 
     func listing(_ folder: String) async throws -> [String: Int64] {
         if let c = cache[folder] { return c }
-        var result: [String: Int64] = [:]
-        do {
-            let list: ListResponse = try await api.get("api/list", ["path": folder])
-            for e in list.entries where !e.isDir { result[e.name.lowercased()] = e.size }
-        } catch APIError.server(404, _) {
-            try await create(folder)
+        if let t = loading[folder] { return try await t.value }
+        let api = api
+        let t = Task { () throws -> [String: Int64] in
+            var result: [String: Int64] = [:]
+            do {
+                let list: ListResponse = try await api.get("api/list", ["path": folder])
+                for e in list.entries where !e.isDir { result[e.name.lowercased()] = e.size }
+            } catch APIError.server(404, _) {
+                try await Self.create(folder, api: api)
+            }
+            return result
         }
+        loading[folder] = t
+        defer { loading[folder] = nil }
+        let result = try await t.value
         cache[folder] = result
         return result
     }
@@ -298,7 +428,7 @@ actor RemoteFolders {
     }
 
     /// Legt "Privat/iPhone/2026/10" Stück für Stück an.
-    private func create(_ folder: String) async throws {
+    private static func create(_ folder: String, api: APIClient) async throws {
         let parts = folder.split(separator: "/").map(String.init)
         for i in 2...parts.count {
             let path = parts[0..<i].joined(separator: "/")

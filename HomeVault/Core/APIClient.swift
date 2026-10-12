@@ -163,13 +163,16 @@ final class APIClient: @unchecked Sendable {
 
     /// Schickt einen fertigen Multipart-Body (Datei) an /api/upload.
     /// Gibt die gespeicherten Pfade zurück.
-    func upload(multipartFile: URL, boundary: String, folder: String) async throws -> [String] {
+    /// `progress` bekommt die seit dem letzten Aufruf gesendeten Bytes.
+    func upload(multipartFile: URL, boundary: String, folder: String,
+                progress: (@Sendable (Int64) -> Void)? = nil) async throws -> [String] {
         struct Saved: Decodable { let saved: [String] }
         let data = try await withRelogin { [self] in
             var req = request(url("api/upload", ["path": folder]), method: "POST")
             req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
             req.timeoutInterval = 600
-            let (data, resp) = try await session.upload(for: req, fromFile: multipartFile)
+            let delegate = progress.map(UploadProgress.init)
+            let (data, resp) = try await session.upload(for: req, fromFile: multipartFile, delegate: delegate)
             _ = try check(data, resp)
             return data
         }
@@ -214,17 +217,43 @@ final class APIClient: @unchecked Sendable {
     }
 }
 
+/// Meldet den Upload-Fortschritt in Häppchen (nicht bei jedem Paket).
+private final class UploadProgress: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let report: @Sendable (Int64) -> Void
+    private var reported: Int64 = 0
+
+    init(_ report: @escaping @Sendable (Int64) -> Void) {
+        self.report = report
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+                    totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        let delta = totalBytesSent - reported
+        if delta >= 512 << 10 || totalBytesSent == totalBytesExpectedToSend {
+            reported = totalBytesSent
+            report(delta)
+        }
+    }
+}
+
 /// Multipart-Body als Datei, damit auch große Videos nicht im Speicher landen.
 enum Multipart {
+    static func head(name: String, boundary: String) -> Data {
+        let safeName = name.replacingOccurrences(of: "\"", with: "_")
+        return Data(("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(safeName)\"\r\n" +
+            "Content-Type: application/octet-stream\r\n\r\n").utf8)
+    }
+
+    static func tail(boundary: String) -> Data {
+        Data("--\(boundary)--\r\n".utf8)
+    }
+
     static func write(files: [(name: String, url: URL)], to out: URL, boundary: String) throws {
         FileManager.default.createFile(atPath: out.path, contents: nil)
         let handle = try FileHandle(forWritingTo: out)
         defer { try? handle.close() }
         for file in files {
-            let safeName = file.name.replacingOccurrences(of: "\"", with: "_")
-            let head = "--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(safeName)\"\r\n" +
-                "Content-Type: application/octet-stream\r\n\r\n"
-            try handle.write(contentsOf: Data(head.utf8))
+            try handle.write(contentsOf: head(name: file.name, boundary: boundary))
             let input = try FileHandle(forReadingFrom: file.url)
             defer { try? input.close() }
             while let chunk = try input.read(upToCount: 4 << 20), !chunk.isEmpty {
@@ -232,6 +261,6 @@ enum Multipart {
             }
             try handle.write(contentsOf: Data("\r\n".utf8))
         }
-        try handle.write(contentsOf: Data("--\(boundary)--\r\n".utf8))
+        try handle.write(contentsOf: tail(boundary: boundary))
     }
 }

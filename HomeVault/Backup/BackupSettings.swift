@@ -7,6 +7,11 @@ enum BackupSettings {
         get { d.bool(forKey: "backup.enabled") }
         set { d.set(newValue, forKey: "backup.enabled") }
     }
+    /// Von Hand angehalten: keine automatischen Läufe bis „Fortsetzen“
+    static var paused: Bool {
+        get { d.bool(forKey: "backup.paused") }
+        set { d.set(newValue, forKey: "backup.paused") }
+    }
     /// Nur im WLAN hochladen (Standard: an)
     static var wifiOnly: Bool {
         get { d.object(forKey: "backup.wifiOnly") as? Bool ?? true }

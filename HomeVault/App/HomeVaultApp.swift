@@ -6,6 +6,7 @@ struct HomeVaultApp: App {
 
     init() {
         BackgroundBackup.register()
+        Downloads.cleanup()
     }
 
     var body: some Scene {
@@ -18,7 +19,7 @@ struct HomeVaultApp: App {
                 Task { await UpdateChecker.shared.check() }
                 guard BackupSettings.enabled, AppModel.shared.api != nil else { return }
                 PhotoLibraryWatcher.shared.start()
-                Task { await BackupEngine.shared.run(.foreground) }
+                BackgroundBackup.runWithGrace(.foreground)
             case .background:
                 BackgroundBackup.schedule()
             default:

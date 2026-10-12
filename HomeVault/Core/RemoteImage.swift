@@ -32,6 +32,8 @@ struct RemoteImage: View {
     let path: String
     var endpoint = "api/thumb"
     var contentMode: ContentMode = .fill
+    /// Symbol, wenn der Server kein Vorschaubild liefern kann
+    var fallbackIcon = "photo"
 
     @State private var image: UIImage?
     @State private var failed = false
@@ -43,8 +45,9 @@ struct RemoteImage: View {
                     .resizable()
                     .aspectRatio(contentMode: contentMode)
             } else if failed {
-                Image(systemName: "photo")
-                    .foregroundStyle(.tertiary)
+                Image(systemName: fallbackIcon)
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
             } else if contentMode == .fit {
                 ProgressView()
             }

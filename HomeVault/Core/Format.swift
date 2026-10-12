@@ -10,6 +10,7 @@ enum Format {
     }
 
     static func relative(_ date: Date) -> String {
+        if abs(date.timeIntervalSinceNow) < 60 { return "gerade eben" }
         let f = RelativeDateTimeFormatter()
         f.locale = Locale(identifier: "de_DE")
         return f.localizedString(for: date, relativeTo: .now)
